@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Add an MCP tool exposure policy controlled by `APPLE_MAIL_MCP_TOOL_PROFILE`, `APPLE_MAIL_MCP_ALLOWED_TOOLS`, and `APPLE_MAIL_MCP_DISABLED_TOOLS`. The new `organize` profile exposes read/search, mailbox/account listing, message movement, read/flag status, attachment list/save/fetch, stats, sync status, `health-check`, and `doctor`, while hiding send, compose, reply, forward, delete, mailbox mutation, rule, contact, template tools, template resources, and the `compose-reply` prompt. The `triage-inbox` prompt omits hidden action types.
+
+### Changed
+- Configure the project-scope `.mcp.json` for this fork to launch with `APPLE_MAIL_MCP_TOOL_PROFILE=organize`, giving local clone users a no-send default.
+
 ## [2.6.1] - 2026-06-29
 Connection-footprint hardening — keep this server's IMAP usage small so multiple coexisting instances (the Claude desktop app spawns a separate set of MCP servers per open conversation) are less likely to exhaust **Gmail's 15-simultaneous-IMAP-connections-per-account cap** and starve Apple Mail of slots.
 

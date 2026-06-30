@@ -2,7 +2,10 @@
   "mcpServers": {
     "apple-mail": {
       "command": "node",
-      "args": ["${CLAUDE_PROJECT_DIR:-.}/build/index.js"]
+      "args": ["${CLAUDE_PROJECT_DIR:-.}/build/index.js"],
+      "env": {
+        "APPLE_MAIL_MCP_TOOL_PROFILE": "organize"
+      }
     }
   }
 }

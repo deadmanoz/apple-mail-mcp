@@ -10,5 +10,12 @@
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { AppleMailManager } from "../services/appleMailManager.js";
-export declare function registerResourcesAndPrompts(server: McpServer, mailManager: AppleMailManager): void;
+interface ResourcesAndPromptsOptions {
+    enableComposeReplyPrompt?: boolean;
+    enableTemplatesResource?: boolean;
+    enableTriageInboxPrompt?: boolean;
+    triageActions?: readonly string[];
+}
+export declare function registerResourcesAndPrompts(server: McpServer, mailManager: AppleMailManager, options?: ResourcesAndPromptsOptions): void;
+export {};
 //# sourceMappingURL=resourcesAndPrompts.d.ts.map

@@ -162,6 +162,46 @@ Read/list/get tools also return **structured JSON** (`structuredContent`) alongs
 Resources expose read-only context the client can attach without a tool call:
 `mail://accounts`, `mail://templates`, and `mail://mailboxes/{account}`. Prompts
 package common workflows: `triage-inbox`, `compose-reply`, `weekly-summary`.
+The `compose-reply` prompt is hidden when the corresponding reply tool is not
+available through the active tool exposure policy. The `triage-inbox` prompt is
+also tailored to omit action suggestions for tools that are hidden. Resources
+backed by hidden tools, such as `mail://templates`, are hidden as well.
+
+### Tool exposure policy
+
+Local deployments can hide tools before they appear in MCP `tools/list`.
+This is useful when an MCP client should be able to read and organize mail but
+must never send or compose messages.
+
+Set a named profile with `APPLE_MAIL_MCP_TOOL_PROFILE`:
+
+| Profile | Exposed tools |
+|---------|---------------|
+| `full` | Default. Exposes every tool. |
+| `organize` | Exposes read/search tools, account/mailbox listing, message move tools, read/flag status tools, attachment list/save/fetch, stats, sync status, `health-check`, and `doctor`. Hides send, compose, reply, forward, delete, mailbox mutation, all rule tools, contact tools, template tools, template resources, and the `compose-reply` prompt. The triage prompt only suggests archive, flag, and ignore actions. |
+
+For a no-send local fork:
+
+```json
+{
+  "mcpServers": {
+    "apple-mail": {
+      "command": "node",
+      "args": ["/path/to/apple-mail-mcp/build/index.js"],
+      "env": {
+        "APPLE_MAIL_MCP_TOOL_PROFILE": "organize"
+      }
+    }
+  }
+}
+```
+
+For finer control, set `APPLE_MAIL_MCP_ALLOWED_TOOLS` or
+`APPLE_MAIL_MCP_DISABLED_TOOLS` to comma or whitespace separated tool names.
+An explicit allowlist replaces the profile allowlist, and the denylist always
+wins. Unknown profile names fail startup; tool names are matched literally and
+are not validated against the registered tool set, so prefer the `organize`
+allowlist profile for no-send safety.
 
 ---
 

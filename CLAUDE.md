@@ -42,6 +42,23 @@ body: "The file is at C:\Users\Documents\report.pdf"
 
 ## Tool Usage Tips
 
+### Tool Exposure Profiles
+
+This fork can hide tools before they appear in MCP `tools/list`.
+
+- `APPLE_MAIL_MCP_TOOL_PROFILE=full` exposes every tool.
+- `APPLE_MAIL_MCP_TOOL_PROFILE=organize` exposes only read/search, mailbox/account listing, message movement, read/flag status, attachment list/save/fetch, stats, sync status, `health-check`, and `doctor`.
+- `APPLE_MAIL_MCP_ALLOWED_TOOLS` can define an explicit comma or whitespace separated allowlist.
+- `APPLE_MAIL_MCP_DISABLED_TOOLS` can define a comma or whitespace separated denylist. The denylist wins over any profile or allowlist.
+- Unknown profile names fail startup. Tool names are matched literally and are not validated against registered tools, so prefer the `organize` allowlist profile for no-send safety.
+
+When the `organize` profile is active, do not assume send, draft, reply,
+forward, delete, mailbox mutation, rule, contact, or template tools are
+available. Do not assume the `mail://templates` resource or `compose-reply`
+prompt is registered. Use `move-message` / `batch-move-messages` for filing,
+and `save-attachment` / `fetch-attachment` for attachments. The `triage-inbox`
+prompt should only suggest actions backed by currently exposed tools.
+
 ### Using Message IDs (Required)
 
 All message operations require an `id` parameter. **Always get IDs first** using `list-messages` or `search-messages`:
