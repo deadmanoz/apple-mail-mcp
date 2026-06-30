@@ -80657,7 +80657,10 @@ function jsonResource(uri, data) {
     contents: [{ uri, mimeType: "application/json", text: JSON.stringify(data, null, 2) }]
   };
 }
-function registerResourcesAndPrompts(server2, mailManager2) {
+function registerResourcesAndPrompts(server2, mailManager2, options = {}) {
+  const triageActions = options.triageActions ?? ["archive", "reply", "flag", "delete", "ignore"];
+  const triageActionsInline = triageActions.join(" / ");
+  const triageActionsDescription = triageActions.join(", ");
   server2.registerResource(
     "accounts",
     "mail://accounts",
@@ -80668,16 +80671,18 @@ function registerResourcesAndPrompts(server2, mailManager2) {
     },
     (uri) => jsonResource(uri.href, mailManager2.listAccounts())
   );
-  server2.registerResource(
-    "templates",
-    "mail://templates",
-    {
-      title: "Email templates",
-      description: "Saved, reusable email templates.",
-      mimeType: "application/json"
-    },
-    (uri) => jsonResource(uri.href, mailManager2.listTemplates())
-  );
+  if (options.enableTemplatesResource !== false) {
+    server2.registerResource(
+      "templates",
+      "mail://templates",
+      {
+        title: "Email templates",
+        description: "Saved, reusable email templates.",
+        mimeType: "application/json"
+      },
+      (uri) => jsonResource(uri.href, mailManager2.listTemplates())
+    );
+  }
   server2.registerResource(
     "mailboxes",
     new ResourceTemplate("mail://mailboxes/{account}", {
@@ -80699,51 +80704,55 @@ function registerResourcesAndPrompts(server2, mailManager2) {
       return jsonResource(uri.href, mailManager2.listMailboxes(account));
     }
   );
-  server2.registerPrompt(
-    "triage-inbox",
-    {
-      title: "Triage inbox",
-      description: "Review unread mail and propose actions (archive, reply, flag, delete).",
-      argsSchema: {
-        account: external_exports.string().optional().describe("Account to triage (default: all)"),
-        limit: external_exports.string().optional().describe("How many unread to review (default 20)")
-      }
-    },
-    ({ account, limit }) => ({
-      messages: [
-        {
-          role: "user",
-          content: {
-            type: "text",
-            text: `Triage my unread email${account ? ` in the "${account}" account` : ""}. Use list-messages with unreadOnly=true${account ? ` and account="${account}"` : ""} and limit=${limit || "20"}. For each message, give a one-line summary and a recommended action (reply / archive / flag / delete / ignore). Group by priority and call out anything time-sensitive. Do not take any action without my confirmation.`
-          }
+  if (options.enableTriageInboxPrompt !== false) {
+    server2.registerPrompt(
+      "triage-inbox",
+      {
+        title: "Triage inbox",
+        description: `Review unread mail and propose actions (${triageActionsDescription}).`,
+        argsSchema: {
+          account: external_exports.string().optional().describe("Account to triage (default: all)"),
+          limit: external_exports.string().optional().describe("How many unread to review (default 20)")
         }
-      ]
-    })
-  );
-  server2.registerPrompt(
-    "compose-reply",
-    {
-      title: "Compose reply",
-      description: "Draft a reply to a specific message in a chosen tone.",
-      argsSchema: {
-        messageId: external_exports.string().describe("ID of the message to reply to"),
-        tone: external_exports.string().optional().describe("Tone, e.g. friendly, formal, brief"),
-        intent: external_exports.string().optional().describe("What the reply should accomplish")
-      }
-    },
-    ({ messageId, tone, intent }) => ({
-      messages: [
-        {
-          role: "user",
-          content: {
-            type: "text",
-            text: `Read message ${messageId} with get-message, then draft a ${tone || "professional"} reply${intent ? ` that ${intent}` : ""}. Show me the draft first; only send after I approve, using reply-to-message.`
+      },
+      ({ account, limit }) => ({
+        messages: [
+          {
+            role: "user",
+            content: {
+              type: "text",
+              text: `Triage my unread email${account ? ` in the "${account}" account` : ""}. Use list-messages with unreadOnly=true${account ? ` and account="${account}"` : ""} and limit=${limit || "20"}. For each message, give a one-line summary and a recommended action (${triageActionsInline}). Group by priority and call out anything time-sensitive. Do not take any action without my confirmation.`
+            }
           }
+        ]
+      })
+    );
+  }
+  if (options.enableComposeReplyPrompt !== false) {
+    server2.registerPrompt(
+      "compose-reply",
+      {
+        title: "Compose reply",
+        description: "Draft a reply to a specific message in a chosen tone.",
+        argsSchema: {
+          messageId: external_exports.string().describe("ID of the message to reply to"),
+          tone: external_exports.string().optional().describe("Tone, e.g. friendly, formal, brief"),
+          intent: external_exports.string().optional().describe("What the reply should accomplish")
         }
-      ]
-    })
-  );
+      },
+      ({ messageId, tone, intent }) => ({
+        messages: [
+          {
+            role: "user",
+            content: {
+              type: "text",
+              text: `Read message ${messageId} with get-message, then draft a ${tone || "professional"} reply${intent ? ` that ${intent}` : ""}. Show me the draft first; only send after I approve, using reply-to-message.`
+            }
+          }
+        ]
+      })
+    );
+  }
   server2.registerPrompt(
     "weekly-summary",
     {
@@ -80936,6 +80945,72 @@ function isOrphaned(ppid = process.ppid) {
   return ppid === 1;
 }
 
+// src/tools/toolPolicy.ts
+var TOOL_PROFILE_ENV = "APPLE_MAIL_MCP_TOOL_PROFILE";
+var ALLOWED_TOOLS_ENV = "APPLE_MAIL_MCP_ALLOWED_TOOLS";
+var DISABLED_TOOLS_ENV = "APPLE_MAIL_MCP_DISABLED_TOOLS";
+var ORGANIZE_TOOL_PROFILE = [
+  "search-messages",
+  "get-message",
+  "get-thread",
+  "list-messages",
+  "mark-as-read",
+  "mark-as-unread",
+  "flag-message",
+  "unflag-message",
+  "move-message",
+  "batch-move-messages",
+  "batch-mark-as-read",
+  "batch-mark-as-unread",
+  "batch-flag-messages",
+  "batch-unflag-messages",
+  "list-attachments",
+  "save-attachment",
+  "fetch-attachment",
+  "list-mailboxes",
+  "list-accounts",
+  "get-unread-count",
+  "get-mail-stats",
+  "get-sync-status",
+  "health-check",
+  "doctor"
+];
+function parseToolList(raw) {
+  if (!raw) return /* @__PURE__ */ new Set();
+  return new Set(
+    raw.split(/[,\s]+/).map((name) => name.trim()).filter(Boolean)
+  );
+}
+function resolveToolPolicy(env = process.env) {
+  const rawProfile = (env[TOOL_PROFILE_ENV] ?? "full").trim().toLowerCase();
+  const profile = rawProfile === "" ? "full" : rawProfile;
+  let profileAllowed;
+  if (profile === "organize") {
+    profileAllowed = new Set(ORGANIZE_TOOL_PROFILE);
+  } else if (profile !== "full") {
+    throw new Error(
+      `${TOOL_PROFILE_ENV} must be "full" or "organize" when set; got "${rawProfile}"`
+    );
+  }
+  const explicitAllowed = parseToolList(env[ALLOWED_TOOLS_ENV]);
+  const allowedTools = explicitAllowed.size > 0 ? explicitAllowed : profileAllowed;
+  return {
+    profile,
+    allowedTools,
+    disabledTools: parseToolList(env[DISABLED_TOOLS_ENV])
+  };
+}
+function isToolEnabled(name, policy) {
+  if (policy.disabledTools.has(name)) return false;
+  if (policy.allowedTools && !policy.allowedTools.has(name)) return false;
+  return true;
+}
+function toolPolicySummary(policy) {
+  const allow = policy.allowedTools ? [...policy.allowedTools].sort().join(",") : "*";
+  const deny = [...policy.disabledTools].sort().join(",");
+  return `profile=${policy.profile} allow=${allow} deny=${deny || "-"}`;
+}
+
 // src/index.ts
 loadFileConfig();
 var MESSAGE_ID_SCHEMA = external_exports.string().regex(/^(\d+|imap:[A-Za-z0-9_-]+)$/, "Message ID must be numeric or an IMAP id (imap:\u2026)");
@@ -81061,7 +81136,48 @@ var server = new McpServer(
   { capabilities: { logging: {} } }
 );
 var mailManager = new AppleMailManager();
-registerResourcesAndPrompts(server, mailManager);
+var toolPolicy = resolveToolPolicy();
+if (toolPolicy.allowedTools || toolPolicy.disabledTools.size > 0) {
+  console.error(`Apple Mail MCP tool policy active: ${toolPolicySummary(toolPolicy)}`);
+}
+function createDisabledRegisteredTool(name) {
+  const registration = {
+    title: name,
+    description: "Disabled by the active Apple Mail MCP tool exposure policy.",
+    handler: async () => ({ content: [] }),
+    enabled: false,
+    enable() {
+      registration.enabled = false;
+    },
+    disable() {
+      registration.enabled = false;
+    },
+    update() {
+      registration.enabled = false;
+    },
+    remove() {
+      registration.enabled = false;
+    }
+  };
+  return registration;
+}
+var registerToolUnfiltered = server.registerTool.bind(server);
+server.registerTool = ((name, ...args) => {
+  if (!isToolEnabled(name, toolPolicy)) return createDisabledRegisteredTool(name);
+  return registerToolUnfiltered(name, ...args);
+});
+registerResourcesAndPrompts(server, mailManager, {
+  enableComposeReplyPrompt: isToolEnabled("reply-to-message", toolPolicy),
+  enableTemplatesResource: isToolEnabled("list-templates", toolPolicy),
+  enableTriageInboxPrompt: isToolEnabled("list-messages", toolPolicy),
+  triageActions: [
+    isToolEnabled("move-message", toolPolicy) ? "archive" : void 0,
+    isToolEnabled("reply-to-message", toolPolicy) ? "reply" : void 0,
+    isToolEnabled("flag-message", toolPolicy) ? "flag" : void 0,
+    isToolEnabled("delete-message", toolPolicy) ? "delete" : void 0,
+    "ignore"
+  ].filter((action) => Boolean(action))
+});
 async function hybridBatchCounts(ids, appleFn, imapFn) {
   const imapIds = ids.filter((i) => i.startsWith("imap:"));
   const numericIds = ids.filter((i) => !i.startsWith("imap:"));

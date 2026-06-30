@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Add an MCP tool exposure policy controlled by `APPLE_MAIL_MCP_TOOL_PROFILE`, `APPLE_MAIL_MCP_ALLOWED_TOOLS`, and `APPLE_MAIL_MCP_DISABLED_TOOLS`. The new `organize` profile exposes read/search, mailbox/account listing, message movement, read/flag status, attachment list/save/fetch, stats, sync status, `health-check`, and `doctor`, while hiding send, compose, reply, forward, delete, mailbox mutation, rule, contact, template tools, template resources, and the `compose-reply` prompt. The `triage-inbox` prompt omits hidden action types.
+
+### Changed
+- Configure the project-scope `.mcp.json` for this fork to launch with `APPLE_MAIL_MCP_TOOL_PROFILE=organize`, giving local clone users a no-send default.
+
 ## [2.8.13] - 2026-07-21
 ### Changed
 - Dependency bump via Dependabot; committed bundle rebuilt. (automated)

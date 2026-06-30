@@ -21,7 +21,7 @@
  */
 
 import { createRequire } from "module";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { AppleMailManager, resolveAttachmentSaveTarget } from "@/services/appleMailManager.js";
@@ -101,6 +101,7 @@ import { extractRfcMessageIdFromSource } from "@/utils/mimeParse.js";
 import { ImapIdleWatcher } from "@/services/imapIdle.js";
 import { loadFileConfig } from "@/services/fileConfig.js";
 import { isOrphaned } from "@/utils/orphan.js";
+import { isToolEnabled, resolveToolPolicy, toolPolicySummary } from "@/tools/toolPolicy.js";
 
 // Load file-based config FIRST (2.1.1) — before anything reads APPLE_MAIL_MCP_*.
 // Lets users configure the server when the host app strips the MCP env block.
@@ -352,9 +353,62 @@ const server = new McpServer(
  */
 const mailManager = new AppleMailManager();
 
+/**
+ * Optional local deployment policy: hide tools before the MCP client sees them.
+ *
+ * This intentionally wraps registerTool once instead of adding per-tool branches,
+ * keeping upstream tool definitions easy to rebase.
+ */
+const toolPolicy = resolveToolPolicy();
+if (toolPolicy.allowedTools || toolPolicy.disabledTools.size > 0) {
+  console.error(`Apple Mail MCP tool policy active: ${toolPolicySummary(toolPolicy)}`);
+}
+
+function createDisabledRegisteredTool(name: string): RegisteredTool {
+  const registration: RegisteredTool = {
+    title: name,
+    description: "Disabled by the active Apple Mail MCP tool exposure policy.",
+    handler: async () => ({ content: [] }),
+    enabled: false,
+    enable() {
+      registration.enabled = false;
+    },
+    disable() {
+      registration.enabled = false;
+    },
+    update() {
+      registration.enabled = false;
+    },
+    remove() {
+      registration.enabled = false;
+    },
+  };
+  return registration;
+}
+
+const registerToolUnfiltered = server.registerTool.bind(server) as unknown as (
+  name: string,
+  ...args: unknown[]
+) => RegisteredTool;
+server.registerTool = ((name: string, ...args: unknown[]) => {
+  if (!isToolEnabled(name, toolPolicy)) return createDisabledRegisteredTool(name);
+  return registerToolUnfiltered(name, ...args);
+}) as typeof server.registerTool;
+
 // MCP resources (accounts/templates/mailboxes) and prompts (triage/reply/
 // summary) — additive context + workflows alongside the tools (D2).
-registerResourcesAndPrompts(server, mailManager);
+registerResourcesAndPrompts(server, mailManager, {
+  enableComposeReplyPrompt: isToolEnabled("reply-to-message", toolPolicy),
+  enableTemplatesResource: isToolEnabled("list-templates", toolPolicy),
+  enableTriageInboxPrompt: isToolEnabled("list-messages", toolPolicy),
+  triageActions: [
+    isToolEnabled("move-message", toolPolicy) ? "archive" : undefined,
+    isToolEnabled("reply-to-message", toolPolicy) ? "reply" : undefined,
+    isToolEnabled("flag-message", toolPolicy) ? "flag" : undefined,
+    isToolEnabled("delete-message", toolPolicy) ? "delete" : undefined,
+    "ignore",
+  ].filter((action): action is string => Boolean(action)),
+});
 
 // Response helpers, the AppleScript serial gate, withErrorHandling, and the
 // message backend router now live in @/tools/respond and @/services/messageRouter.

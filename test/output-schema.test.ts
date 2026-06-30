@@ -23,6 +23,24 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 const SERVER = resolve(__dirname, "../build/index.js");
 
+async function withServerClient<T>(
+  env: Record<string, string>,
+  fn: (client: Client) => Promise<T>
+): Promise<T> {
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [SERVER],
+    env,
+  });
+  const scopedClient = new Client({ name: "outputschema-scoped-test", version: "0.0.0" });
+  await scopedClient.connect(transport);
+  try {
+    return await fn(scopedClient);
+  } finally {
+    await scopedClient.close();
+  }
+}
+
 describe("outputSchema contract (real server over stdio)", () => {
   let client: Client;
 
@@ -85,4 +103,76 @@ describe("outputSchema contract (real server over stdio)", () => {
       void Promise.resolve(call).catch(() => {});
     }
   }, 30_000);
+
+  it("full profile advertises send tools and compose prompts", async () => {
+    await withServerClient(
+      {
+        ...(process.env as Record<string, string>),
+        APPLE_MAIL_MCP_TOOL_PROFILE: "full",
+        APPLE_MAIL_MCP_ALLOWED_TOOLS: "",
+        APPLE_MAIL_MCP_DISABLED_TOOLS: "",
+      },
+      async (scopedClient) => {
+        const { tools } = await scopedClient.listTools();
+        const names = tools.map((t) => t.name);
+        expect(names).toContain("send-email");
+        expect(names).toContain("reply-to-message");
+        expect(names).toContain("delete-message");
+
+        const { prompts } = await scopedClient.listPrompts();
+        const promptNames = prompts.map((p) => p.name);
+        expect(promptNames).toContain("compose-reply");
+
+        const triagePrompt = await scopedClient.getPrompt({
+          name: "triage-inbox",
+          arguments: {},
+        });
+        const triageText = JSON.stringify(triagePrompt);
+        expect(triageText).toContain("archive / reply / flag / delete / ignore");
+      }
+    );
+  }, 60_000);
+
+  it("organize profile hides send and destructive-delete tools from the advertised MCP surface", async () => {
+    await withServerClient(
+      {
+        ...(process.env as Record<string, string>),
+        APPLE_MAIL_MCP_TOOL_PROFILE: "organize",
+        APPLE_MAIL_MCP_ALLOWED_TOOLS: "",
+        APPLE_MAIL_MCP_DISABLED_TOOLS: "",
+      },
+      async (scopedClient) => {
+        const { tools } = await scopedClient.listTools();
+        const names = tools.map((t) => t.name);
+        expect(names).toContain("move-message");
+        expect(names).toContain("batch-move-messages");
+        expect(names).toContain("save-attachment");
+        expect(names).toContain("fetch-attachment");
+        expect(names).not.toContain("send-email");
+        expect(names).not.toContain("send-serial-email");
+        expect(names).not.toContain("reply-to-message");
+        expect(names).not.toContain("forward-message");
+        expect(names).not.toContain("create-draft");
+        expect(names).not.toContain("delete-message");
+        expect(names).not.toContain("batch-delete-messages");
+        expect(names).not.toContain("create-rule");
+        expect(names).not.toContain("delete-rule");
+
+        const { prompts } = await scopedClient.listPrompts();
+        const promptNames = prompts.map((p) => p.name);
+        expect(promptNames).toContain("triage-inbox");
+        expect(promptNames).toContain("weekly-summary");
+        expect(promptNames).not.toContain("compose-reply");
+
+        const triagePrompt = await scopedClient.getPrompt({
+          name: "triage-inbox",
+          arguments: {},
+        });
+        const triageText = JSON.stringify(triagePrompt);
+        expect(triageText).toContain("archive / flag / ignore");
+        expect(triageText).not.toMatch(/\breply\b/i);
+        expect(triageText).not.toMatch(/\bdelete\b/i);
+      }
+    );
+  }, 60_000);
 });
