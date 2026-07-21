@@ -21224,7 +21224,7 @@ var require_transport = __commonJS({
   "node_modules/.pnpm/pino@10.3.1/node_modules/pino/lib/transport.js"(exports, module) {
     "use strict";
     var { createRequire: createRequire2 } = __require("module");
-    var { existsSync: existsSync6 } = __require("node:fs");
+    var { existsSync: existsSync7 } = __require("node:fs");
     var getCallers = require_caller();
     var { join: join6, isAbsolute: isAbsolute3, sep: sep2 } = __require("node:path");
     var { fileURLToPath } = __require("node:url");
@@ -21298,7 +21298,7 @@ var require_transport = __commonJS({
           return false;
         }
       }
-      return isAbsolute3(path) && !existsSync6(path);
+      return isAbsolute3(path) && !existsSync7(path);
     }
     function stripQuotes(value) {
       const first = value[0];
@@ -75940,6 +75940,31 @@ function executeAppleScript(script, options = {}) {
 }
 
 // src/utils/mimeParse.ts
+function decodeEncodedWords(value) {
+  if (!value.includes("=?")) return value;
+  const decodeOne = (charset, enc, text) => {
+    try {
+      let bytes;
+      if (/^b$/i.test(enc)) {
+        bytes = Buffer.from(text, "base64");
+      } else {
+        const qp = text.replace(/_/g, " ").replace(
+          /=([0-9A-Fa-f]{2})/g,
+          (_m, hex) => String.fromCharCode(parseInt(hex, 16))
+        );
+        bytes = Buffer.from(qp, "latin1");
+      }
+      return new TextDecoder(charset.split("*")[0]).decode(bytes);
+    } catch {
+      return null;
+    }
+  };
+  const collapsed = value.replace(/\?=\s+=\?/g, "?==?");
+  return collapsed.replace(
+    /=\?([^?]+)\?([BbQq])\?([^?]*)\?=/g,
+    (whole, charset, enc, text) => decodeOne(charset, enc, text) ?? whole
+  );
+}
 function extractBoundary(source) {
   const match = source.match(/boundary="?([^";\s\r\n]+)"?/i);
   return match ? match[1] : null;
@@ -77369,15 +77394,26 @@ var AppleMailManager = class {
     };
   }
   /**
-   * Get the raw MIME source of a message.
-   * Used as fallback for attachment extraction when AppleScript
-   * mail attachments returns empty.
+   * Get the raw MIME source of a message, preserving why it failed.
+   *
+   * `getRawSource` collapses every failure into `null`, which is fine for its
+   * original job (an internal attachment fallback that just tries the next
+   * strategy) but useless for a user-facing export, where "message not found",
+   * "Automation denied", and "timed out after 120s" need different answers.
+   * This returns the reason; `getRawSource` wraps it for the callers that
+   * genuinely only care whether they got a string.
    *
    * Timeout is 2x the default (120s) because `source of msg` returns
    * the entire raw message including base64-encoded attachments —
    * a 20MB attachment can take several seconds over Exchange/IMAP.
+   *
+   * Fidelity caveat: this is a *text* round-trip, not bytes. Mail decodes the
+   * message to an AppleScript string, osascript re-encodes it as UTF-8, and
+   * `executeAppleScript` trims it. For a message with a non-UTF-8 charset and
+   * an 8-bit transfer encoding, the result no longer matches its own declared
+   * charset. The IMAP path (`imapFetchMessageSource`) returns real bytes.
    */
-  getRawSource(id, hint) {
+  getRawSourceResult(id, hint) {
     const loc = hint?.account && hint?.mailbox ? { account: hint.account, mailbox: hint.mailbox } : this.idLocationIndex.get(id.toString());
     if (loc) {
       const scopedScript = this.scopedByIdScript(
@@ -77387,7 +77423,7 @@ var AppleMailManager = class {
         "return source of msg"
       );
       const scoped = executeAppleScript(scopedScript, { timeoutMs: 12e4 });
-      if (scoped.success && scoped.output.trim()) return scoped.output;
+      if (scoped.success && scoped.output.trim()) return { ok: true, source: scoped.output };
     }
     const script = buildAppLevelScript(`
       try
@@ -77397,21 +77433,42 @@ var AppleMailManager = class {
               set matchingMsgs to (messages of mb whose id is ${Number(id)})
               if (count of matchingMsgs) > 0 then
                 set msg to item 1 of matchingMsgs
-                return source of msg
+                return "ok:" & (source of msg)
               end if
             end try
           end repeat
         end repeat
-        return ""
+        return "error:Message not found"
       on error errMsg
-        return ""
+        return "error:" & errMsg
       end try
     `);
     const result = executeAppleScript(script, { timeoutMs: 12e4 });
-    if (!result.success || !result.output.trim()) {
-      return null;
+    if (!result.success) {
+      return { ok: false, error: result.error ?? "AppleScript execution failed" };
     }
-    return result.output;
+    const output = result.output;
+    if (output.startsWith("error:")) {
+      return { ok: false, error: output.slice("error:".length) || "Unknown Mail.app error" };
+    }
+    if (!output.startsWith("ok:")) {
+      return { ok: false, error: "Unexpected AppleScript output while reading message source" };
+    }
+    const source = output.slice("ok:".length);
+    if (!source.trim()) {
+      return { ok: false, error: "Mail returned an empty source for this message" };
+    }
+    return { ok: true, source };
+  }
+  /**
+   * Get the raw MIME source of a message, or null on any failure.
+   *
+   * Thin wrapper over {@link getRawSourceResult} for callers that only need the
+   * string (attachment fallback, SMTP reply/forward threading).
+   */
+  getRawSource(id, hint) {
+    const result = this.getRawSourceResult(id, hint);
+    return result.ok && result.source ? result.source : null;
   }
   /**
    * List messages in a mailbox.
@@ -79218,8 +79275,8 @@ ${actionStmts.join("\n")}
 };
 
 // src/index.ts
-import { writeFileSync as writeFileSync4 } from "fs";
-import { join as joinPath } from "path";
+import { writeFileSync as writeFileSync4, existsSync as existsSync6, statSync } from "fs";
+import { resolve as resolvePath, join as joinPath, dirname as dirname2 } from "path";
 
 // src/services/smtpMailer.ts
 var import_nodemailer = __toESM(require_nodemailer(), 1);
@@ -80114,6 +80171,33 @@ async function imapFetchMessageId(id, deps = {}) {
     return null;
   }
 }
+async function imapFetchMessageSource(id, deps = {}) {
+  const ref = decodeImapId(id);
+  if (!ref) return { success: false, error: `Not an IMAP message id: "${id}".` };
+  return withMailbox(
+    ref.path,
+    { ...deps, account: deps.account ?? ref.account },
+    async (client) => {
+      const msg = await client.fetchOne(
+        String(ref.uid),
+        { envelope: true, source: true },
+        { uid: true }
+      );
+      if (!msg) {
+        return { success: false, error: `IMAP message UID ${ref.uid} not found in "${ref.path}".` };
+      }
+      if (!msg.source) {
+        return { success: false, error: `IMAP returned no source for UID ${ref.uid}.` };
+      }
+      return {
+        success: true,
+        source: Buffer.isBuffer(msg.source) ? msg.source : Buffer.from(msg.source, "utf8"),
+        subject: msg.envelope?.subject,
+        date: msg.envelope?.date
+      };
+    }
+  );
+}
 function flagOp(id, flag, add, deps) {
   const ref = decodeImapId(id);
   if (!ref) return Promise.resolve({ success: false, error: `Not an IMAP message id: "${id}".` });
@@ -80382,6 +80466,41 @@ async function imapThread(id, deps = {}, limit = 50) {
     },
     true
   );
+}
+
+// src/utils/emlFilename.ts
+var MAX_STEM_BYTES = 200;
+function sanitiseFilenameComponent(value) {
+  return value.replace(/[/\\:]/g, "-").replace(/[\x00-\x1f\x7f]/g, "").replace(/\s+/g, " ").trim().replace(/^\.+/, "").trim();
+}
+function truncateToBytes(value, maxBytes) {
+  if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
+  let out = "";
+  let used = 0;
+  for (const ch of value) {
+    const size = Buffer.byteLength(ch, "utf8");
+    if (used + size > maxBytes) break;
+    out += ch;
+    used += size;
+  }
+  return out.trimEnd();
+}
+function formatDateStem(date3) {
+  if (date3 === void 0) return void 0;
+  const parsed = date3 instanceof Date ? date3 : new Date(date3);
+  if (Number.isNaN(parsed.getTime())) return void 0;
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(parsed.getDate())}`;
+}
+function deriveEmlFilename({ id, subject, date: date3 }) {
+  const decodedSubject = subject ? decodeEncodedWords(subject) : "";
+  const subjectStem = sanitiseFilenameComponent(decodedSubject);
+  const sanitisedId = sanitiseFilenameComponent(id);
+  const fallbackStem = sanitisedId ? `message-${sanitisedId}` : "message";
+  const datePart = formatDateStem(date3);
+  const namePart = subjectStem || fallbackStem;
+  const stem = truncateToBytes(datePart ? `${datePart} ${namePart}` : namePart, MAX_STEM_BYTES);
+  return `${stem || fallbackStem}.eml`;
 }
 
 // src/utils/serialize.ts
@@ -80967,6 +81086,7 @@ var ORGANIZE_TOOL_PROFILE = [
   "list-attachments",
   "save-attachment",
   "fetch-attachment",
+  "export-message-source",
   "list-mailboxes",
   "list-accounts",
   "get-unread-count",
@@ -82306,6 +82426,81 @@ ${r.base64}`,
       { attachmentName, bytes: r.bytes, contentBase64: r.base64 }
     );
   }, "Error fetching attachment")
+);
+function ensureEmlExtension(name) {
+  return /\.eml$/i.test(name) ? name : `${name}.eml`;
+}
+function emlTargetProblem(dir, name) {
+  if (/[/\\\0]/.test(name)) return "must not contain path separators";
+  const target = joinPath(dir, name);
+  if (dirname2(target) !== dir || !isPathWithinAllowedRoots(target)) {
+    return "resolves outside the save directory";
+  }
+  return null;
+}
+server.registerTool(
+  "export-message-source",
+  {
+    description: "Use when: exporting a message's complete raw MIME source (by id) to disk as an .eml file, e.g. to archive it into DEVONthink (which imports .eml as a native email record, preserving headers, body, and attachments) or another mail client.\nReturns: the saved file path, its size in bytes, and which backend produced it.\nDo not use when: you want the readable body (use get-message) or a single attachment (use save-attachment / fetch-attachment).\nSafety: writes a file to disk \u2014 savePath must be a directory inside the configured allowed roots, and filename may not contain path separators.\nFidelity: backend='imap' is byte-exact. backend='applescript' is re-encoded to UTF-8 by Mail's scripting bridge, so a message declaring a non-UTF-8 charset with an 8-bit transfer encoding may not match its own charset header.",
+    inputSchema: {
+      id: MESSAGE_ID_SCHEMA,
+      savePath: external_exports.string().min(1, "Save directory path is required"),
+      filename: external_exports.string().min(1).optional().describe(
+        "Filename for the .eml (default: derived from the message's date and subject, e.g. '2026-07-15 Invoice from Acme.eml'). The .eml extension is added if omitted."
+      )
+    },
+    outputSchema: {
+      ok: external_exports.boolean().optional(),
+      id: external_exports.string().optional(),
+      filePath: external_exports.string().optional(),
+      bytes: external_exports.number().optional(),
+      backend: external_exports.string().optional()
+    }
+  },
+  withErrorHandling(async ({ id, savePath, filename }) => {
+    const resolvedDir = resolvePath(savePath);
+    if (!isPathWithinAllowedRoots(resolvedDir)) {
+      return errorResponse(`Save path "${savePath}" is outside allowed directories`);
+    }
+    if (!existsSync6(resolvedDir) || !statSync(resolvedDir).isDirectory()) {
+      return errorResponse(`Save path "${savePath}" is not an existing directory`);
+    }
+    const explicitName = filename ? ensureEmlExtension(filename) : void 0;
+    if (explicitName) {
+      const problem2 = emlTargetProblem(resolvedDir, explicitName);
+      if (problem2) return errorResponse(`Invalid filename "${filename}": ${problem2}`);
+    }
+    let source;
+    let backend;
+    let derivedName;
+    if (id.startsWith("imap:")) {
+      const r = await imapFetchMessageSource(id);
+      if (!r.success || !r.source) {
+        return errorResponse(r.error || `Failed to export message "${id}"`);
+      }
+      backend = "imap";
+      source = r.source;
+      derivedName = deriveEmlFilename({ id, subject: r.subject, date: r.date });
+    } else {
+      const r = mailManager.getRawSourceResult(id);
+      if (!r.ok || !r.source) {
+        return errorResponse(r.error || `Failed to export message "${id}"`);
+      }
+      backend = "applescript";
+      source = Buffer.from(r.source, "utf8");
+      const headers = parseOriginalHeaders(r.source);
+      derivedName = deriveEmlFilename({ id, subject: headers.subject, date: headers.date });
+    }
+    const name = explicitName ?? derivedName;
+    const problem = emlTargetProblem(resolvedDir, name);
+    if (problem) return errorResponse(`Invalid filename "${name}": ${problem}`);
+    const filePath = joinPath(resolvedDir, name);
+    writeFileSync4(filePath, source);
+    return successResponse(
+      `Exported message ${id} to ${filePath} (${source.length} bytes, ${backend} backend).`,
+      { ok: true, id, filePath, bytes: source.length, backend }
+    );
+  }, "Error exporting message source")
 );
 server.registerTool(
   "list-mailboxes",

@@ -28,6 +28,7 @@ export const ORGANIZE_TOOL_PROFILE = [
   "list-attachments",
   "save-attachment",
   "fetch-attachment",
+  "export-message-source",
   "list-mailboxes",
   "list-accounts",
   "get-unread-count",

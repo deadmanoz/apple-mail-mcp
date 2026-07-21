@@ -821,6 +821,29 @@ Save a message attachment to disk.
 | `attachmentName` | string | Yes | Filename of the attachment |
 | `savePath` | string | Yes | Directory to save to |
 
+#### `export-message-source`
+
+Export a message's complete raw MIME source to disk as an `.eml` file — the whole message, not just its body or one attachment. DEVONthink, Thunderbird, and most mail clients import `.eml` as a native email record with headers, body, and attachments preserved, so this is the scripted equivalent of dragging a message out of Mail.app.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | Yes | Message ID |
+| `savePath` | string | Yes | Directory to write the `.eml` into (must be inside the allowed roots) |
+| `filename` | string | No | Filename for the `.eml`. Defaults to `YYYY-MM-DD Subject.eml`; the `.eml` extension is added if omitted. |
+
+Returns `{ ok, id, filePath, bytes, backend }`.
+
+**Fidelity — check `backend`.** `imap` ids fetch `BODY[]` and the bytes reach disk untouched, so the export is byte-exact.
+
+Numeric ids are **not** byte-exact. `source of msg` is a *text* round-trip: Mail decodes the message to an AppleScript string and `osascript` re-encodes it as UTF-8. Measured consequences:
+
+- **Line endings are normalised from CRLF to LF**, on every export. RFC 5322 mandates CRLF, so the file is a normalised rendering rather than the original bytes. DEVONthink, Thunderbird, and Python's `email` module all import it happily, but anything byte-sensitive (DKIM verification, checksumming against the server copy) will fail.
+- **Non-UTF-8 8-bit bodies can be corrupted.** A message declaring ISO-8859-1 / Windows-1252 / Shift_JIS with `Content-Transfer-Encoding: 8bit` ends up carrying UTF-8 bytes under its original charset header, and importers honour the declared charset, so it surfaces as mojibake. Mail using quoted-printable or base64 is ASCII on the wire and unaffected — which is most modern mail.
+
+Configure IMAP (see [IMAP setup](docs/IMAP-SETUP.md)) if you need the byte-exact guarantee.
+
+**Filenames.** The default is `YYYY-MM-DD Subject.eml`, not `{id}.eml`, because DEVONthink names an imported record after the filename rather than the Subject header — `{id}.eml` yields a record called "83465". RFC 2047 encoded-words are decoded first, so `=?UTF-8?B?Q2Fmw6k=?=` becomes `Café` instead of appearing raw. The date is redundant for DEVONthink (it parses the `Date` header into the record's creation date) but sorts usefully in Finder and disambiguates the many messages sharing a subject.
+
 ---
 
 ### Batch Operations

@@ -243,6 +243,23 @@ IMAP connections are capped: **Gmail allows at most 15 simultaneous IMAP connect
 3. save-attachment id="..." attachmentName="report.pdf" savePath="/tmp" → save to disk
 ```
 
+### Archive a message as a file (.eml)
+
+```text
+1. search-messages query="invoice" → get the message ID
+2. export-message-source id="..." savePath="~/Downloads" → writes "2026-07-15 Subject.eml"
+```
+
+Use this, not `save-attachment`, when the whole message is wanted rather than one
+attachment — the `.eml` imports into DEVONthink/Thunderbird as a native email
+record (headers, body, and attachments intact), which is what dragging out of
+Mail.app produces.
+
+Let the filename default unless the user asks otherwise: importers name the
+record after the filename, so `2026-07-15 Invoice from Acme.eml` reads far better
+than an id. Check `backend` in the result — `imap` is byte-exact, `applescript`
+is re-encoded to UTF-8 and can corrupt a non-UTF-8 8-bit message.
+
 ### Manage mailboxes
 
 ```text

@@ -699,6 +699,15 @@ export function buildSearchCondition(filters: SearchConditionFilters): string {
   return conditions.length > 0 ? `whose ${conditions.join(" and ")}` : "";
 }
 
+/** Outcome of reading a message's raw MIME source via AppleScript. */
+export interface RawSourceResult {
+  ok: boolean;
+  /** The raw source, present only when `ok`. */
+  source?: string;
+  /** Why it failed, present only when `!ok`. */
+  error?: string;
+}
+
 export class AppleMailManager {
   /**
    * Default account used when no account is specified.
@@ -1132,7 +1141,7 @@ export class AppleMailManager {
     // against `msgDate` (set per-message below) rather than coerced from a
     // locale-formatted string — `date "May 30, 2026"` throws on non-English system
     // locales, and that swallowed error silently zeroes out results. See issue #15.
-    // dateFrom/dateTo are already validated by DATE_FILTER_SCHEMA as parseable dates.
+    // dateFrom/dateTo are already validated by the MCP date-filter schema as parseable dates.
     let dateSetup = "";
     let dateFilter = "";
     if (dateFrom || dateTo) {
@@ -1553,15 +1562,26 @@ export class AppleMailManager {
   }
 
   /**
-   * Get the raw MIME source of a message.
-   * Used as fallback for attachment extraction when AppleScript
-   * mail attachments returns empty.
+   * Get the raw MIME source of a message, preserving why it failed.
+   *
+   * `getRawSource` collapses every failure into `null`, which is fine for its
+   * original job (an internal attachment fallback that just tries the next
+   * strategy) but useless for a user-facing export, where "message not found",
+   * "Automation denied", and "timed out after 120s" need different answers.
+   * This returns the reason; `getRawSource` wraps it for the callers that
+   * genuinely only care whether they got a string.
    *
    * Timeout is 2x the default (120s) because `source of msg` returns
    * the entire raw message including base64-encoded attachments —
    * a 20MB attachment can take several seconds over Exchange/IMAP.
+   *
+   * Fidelity caveat: this is a *text* round-trip, not bytes. Mail decodes the
+   * message to an AppleScript string, osascript re-encodes it as UTF-8, and
+   * `executeAppleScript` trims it. For a message with a non-UTF-8 charset and
+   * an 8-bit transfer encoding, the result no longer matches its own declared
+   * charset. The IMAP path (`imapFetchMessageSource`) returns real bytes.
    */
-  getRawSource(id: string, hint?: { account?: string; mailbox?: string }): string | null {
+  getRawSourceResult(id: string, hint?: { account?: string; mailbox?: string }): RawSourceResult {
     // Fast path: fetch from the known mailbox directly (same rationale as
     // getMessageContent — the unscoped scan below times out for a message in a
     // late-iterated large folder like "Sent Items"). See idLocationIndex.
@@ -1578,7 +1598,7 @@ export class AppleMailManager {
         "return source of msg"
       );
       const scoped = executeAppleScript(scopedScript, { timeoutMs: 120000 });
-      if (scoped.success && scoped.output.trim()) return scoped.output;
+      if (scoped.success && scoped.output.trim()) return { ok: true, source: scoped.output };
       // Miss (stale index) → fall through to the full scan.
     }
 
@@ -1590,24 +1610,48 @@ export class AppleMailManager {
               set matchingMsgs to (messages of mb whose id is ${Number(id)})
               if (count of matchingMsgs) > 0 then
                 set msg to item 1 of matchingMsgs
-                return source of msg
+                return "ok:" & (source of msg)
               end if
             end try
           end repeat
         end repeat
-        return ""
+        return "error:Message not found"
       on error errMsg
-        return ""
+        return "error:" & errMsg
       end try
     `);
 
     const result = executeAppleScript(script, { timeoutMs: 120000 });
 
-    if (!result.success || !result.output.trim()) {
-      return null;
+    if (!result.success) {
+      return { ok: false, error: result.error ?? "AppleScript execution failed" };
     }
 
-    return result.output;
+    const output = result.output;
+    if (output.startsWith("error:")) {
+      return { ok: false, error: output.slice("error:".length) || "Unknown Mail.app error" };
+    }
+    if (!output.startsWith("ok:")) {
+      // Shouldn't happen: every branch above returns a tagged string.
+      return { ok: false, error: "Unexpected AppleScript output while reading message source" };
+    }
+
+    const source = output.slice("ok:".length);
+    if (!source.trim()) {
+      return { ok: false, error: "Mail returned an empty source for this message" };
+    }
+    return { ok: true, source };
+  }
+
+  /**
+   * Get the raw MIME source of a message, or null on any failure.
+   *
+   * Thin wrapper over {@link getRawSourceResult} for callers that only need the
+   * string (attachment fallback, SMTP reply/forward threading).
+   */
+  getRawSource(id: string, hint?: { account?: string; mailbox?: string }): string | null {
+    const result = this.getRawSourceResult(id, hint);
+    return result.ok && result.source ? result.source : null;
   }
 
   /**

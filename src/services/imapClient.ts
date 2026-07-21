@@ -1037,6 +1037,59 @@ export async function imapFetchMessageId(id: string, deps: ImapDeps = {}): Promi
   }
 }
 
+/** Raw source of a message, plus the envelope fields needed to name the file. */
+export interface ImapMessageSource {
+  success: boolean;
+  /** Exact bytes as returned by FETCH BODY[]. */
+  source?: Buffer;
+  /** Envelope subject, already RFC 2047-decoded by the IMAP client. */
+  subject?: string;
+  date?: Date | string;
+  error?: string;
+}
+
+/**
+ * Fetch a message's raw MIME source by composite IMAP id.
+ *
+ * Returns a **Buffer**, deliberately. This is the only backend that yields the
+ * message's true bytes, and stringifying here (as `imapGetMessage` does, and as
+ * routing through `ImapOpResult.info` would force) re-encodes them as UTF-8 and
+ * throws away exactly the fidelity that makes an exported .eml worth having.
+ *
+ * The envelope rides along in the same FETCH so the caller can derive a
+ * subject-based filename without a second round-trip.
+ */
+export async function imapFetchMessageSource(
+  id: string,
+  deps: ImapDeps = {}
+): Promise<ImapMessageSource> {
+  const ref = decodeImapId(id);
+  if (!ref) return { success: false, error: `Not an IMAP message id: "${id}".` };
+  return withMailbox(
+    ref.path,
+    { ...deps, account: deps.account ?? ref.account },
+    async (client) => {
+      const msg = await client.fetchOne(
+        String(ref.uid),
+        { envelope: true, source: true },
+        { uid: true }
+      );
+      if (!msg) {
+        return { success: false, error: `IMAP message UID ${ref.uid} not found in "${ref.path}".` };
+      }
+      if (!msg.source) {
+        return { success: false, error: `IMAP returned no source for UID ${ref.uid}.` };
+      }
+      return {
+        success: true,
+        source: Buffer.isBuffer(msg.source) ? msg.source : Buffer.from(msg.source, "utf8"),
+        subject: msg.envelope?.subject,
+        date: msg.envelope?.date,
+      };
+    }
+  );
+}
+
 function flagOp(id: string, flag: string, add: boolean, deps: ImapDeps): Promise<ImapOpResult> {
   const ref = decodeImapId(id);
   if (!ref) return Promise.resolve({ success: false, error: `Not an IMAP message id: "${id}".` });

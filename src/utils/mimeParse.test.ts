@@ -4,6 +4,7 @@ import {
   extractMimeAttachment,
   extractHtmlBody,
   extractRfcMessageIdFromSource,
+  decodeEncodedWords,
 } from "./mimeParse.js";
 
 describe("extractRfcMessageIdFromSource", () => {
@@ -32,6 +33,52 @@ describe("extractRfcMessageIdFromSource", () => {
 
   it("returns empty string for empty input", () => {
     expect(extractRfcMessageIdFromSource("")).toBe("");
+  });
+});
+
+describe("decodeEncodedWords", () => {
+  it("passes through a plain ASCII header untouched", () => {
+    expect(decodeEncodedWords("Invoice from Acme")).toBe("Invoice from Acme");
+  });
+
+  it("decodes a base64 encoded-word", () => {
+    expect(decodeEncodedWords("=?UTF-8?B?Q2Fmw6k=?=")).toBe("Café");
+  });
+
+  it("decodes a quoted-printable encoded-word, treating _ as space", () => {
+    expect(decodeEncodedWords("=?UTF-8?Q?Caf=C3=A9_time?=")).toBe("Café time");
+  });
+
+  it("is case-insensitive about the encoding letter", () => {
+    expect(decodeEncodedWords("=?UTF-8?b?Q2Fmw6k=?=")).toBe("Café");
+    expect(decodeEncodedWords("=?UTF-8?q?Caf=C3=A9?=")).toBe("Café");
+  });
+
+  it("decodes a non-UTF-8 charset", () => {
+    // "Café" in ISO-8859-1: 0xE9 for "é".
+    expect(decodeEncodedWords("=?ISO-8859-1?Q?Caf=E9?=")).toBe("Café");
+  });
+
+  it("drops whitespace separating adjacent encoded-words (RFC 2047 6.2)", () => {
+    expect(decodeEncodedWords("=?UTF-8?B?Q2Fm?= =?UTF-8?B?w6k=?=")).toBe("Café");
+  });
+
+  it("preserves surrounding literal text and its spacing", () => {
+    expect(decodeEncodedWords("Re: =?UTF-8?B?Q2Fmw6k=?= today")).toBe("Re: Café today");
+  });
+
+  it("strips an RFC 2231 language suffix from the charset", () => {
+    expect(decodeEncodedWords("=?UTF-8*en?B?Q2Fmw6k=?=")).toBe("Café");
+  });
+
+  it("leaves an unknown charset verbatim rather than throwing", () => {
+    const input = "=?NOT-A-CHARSET?B?Q2Fmw6k=?=";
+    expect(decodeEncodedWords(input)).toBe(input);
+  });
+
+  it("leaves a malformed encoded-word verbatim", () => {
+    const input = "=?UTF-8?X?Q2Fmw6k=?=";
+    expect(decodeEncodedWords(input)).toBe(input);
   });
 });
 

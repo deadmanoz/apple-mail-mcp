@@ -26,6 +26,7 @@ import {
   imapMailStats,
   imapListAttachments,
   imapFetchAttachment,
+  imapFetchMessageSource,
   imapBatchMarkRead,
   imapBatchMove,
   imapThread,
@@ -1027,5 +1028,102 @@ describe("connection pooling (#50 / A3)", () => {
       { config: cfg, connect: async () => make() }
     );
     expect(logouts).toBe(2); // injected path logs out each call (no pooling)
+  });
+});
+
+describe("imapFetchMessageSource (raw .eml export)", () => {
+  const SRC_ID = encodeImapId("iCloud", "INBOX", 7);
+
+  function makeSourceClient(msg: unknown): ImapClientLike {
+    return {
+      ...makeClient([], {}),
+      getMailboxLock: async () => ({ release: () => undefined }),
+      fetchOne: async () => msg as never,
+    };
+  }
+
+  // The whole point of the IMAP backend: it is the only path that yields the
+  // message's true bytes. A JS-string round-trip would replace the lone 0xE9
+  // with U+FFFD (0xEF 0xBF 0xBD), silently breaking a message that declares
+  // charset=iso-8859-1.
+  it("returns the raw bytes unmodified, including non-UTF-8 octets", async () => {
+    const raw = Buffer.concat([
+      Buffer.from(
+        "Subject: Test\r\nContent-Type: text/plain; charset=iso-8859-1\r\n\r\nCaf",
+        "ascii"
+      ),
+      Buffer.from([0xe9]),
+      Buffer.from("\r\n", "ascii"),
+    ]);
+
+    const r = await imapFetchMessageSource(SRC_ID, {
+      config: cfg,
+      connect: async () => makeSourceClient({ uid: 7, envelope: {}, source: raw }),
+    });
+
+    expect(r.success).toBe(true);
+    expect(Buffer.isBuffer(r.source)).toBe(true);
+    expect(r.source!.equals(raw)).toBe(true);
+    expect(r.source!.includes(0xe9)).toBe(true);
+    expect(r.source!.includes(Buffer.from([0xef, 0xbf, 0xbd]))).toBe(false);
+  });
+
+  it("carries the envelope subject and date through for filename derivation", async () => {
+    const date = new Date("2026-07-15T09:14:22+10:00");
+    const r = await imapFetchMessageSource(SRC_ID, {
+      config: cfg,
+      connect: async () =>
+        makeSourceClient({
+          uid: 7,
+          envelope: { subject: "Invoice from Acme", date },
+          source: Buffer.from("Subject: Invoice from Acme\r\n\r\nhi\r\n"),
+        }),
+    });
+
+    expect(r.success).toBe(true);
+    expect(r.subject).toBe("Invoice from Acme");
+    expect(r.date).toEqual(date);
+  });
+
+  it("opens the mailbox named in the id", async () => {
+    let opened: string | undefined;
+    const id = encodeImapId("iCloud", "Archive/2026", 12);
+    await imapFetchMessageSource(id, {
+      config: cfg,
+      connect: async () => ({
+        ...makeClient([], {}),
+        getMailboxLock: async (path: string) => {
+          opened = path;
+          return { release: () => undefined };
+        },
+        fetchOne: async () => ({ uid: 12, envelope: {}, source: Buffer.from("x") }) as never,
+      }),
+    });
+    expect(opened).toBe("Archive/2026");
+  });
+
+  it("reports a missing message rather than returning empty", async () => {
+    const r = await imapFetchMessageSource(SRC_ID, {
+      config: cfg,
+      connect: async () => makeSourceClient(false),
+    });
+    expect(r.success).toBe(false);
+    expect(r.error).toMatch(/UID 7 not found/);
+    expect(r.source).toBeUndefined();
+  });
+
+  it("reports a message that fetched but carried no source", async () => {
+    const r = await imapFetchMessageSource(SRC_ID, {
+      config: cfg,
+      connect: async () => makeSourceClient({ uid: 7, envelope: {} }),
+    });
+    expect(r.success).toBe(false);
+    expect(r.error).toMatch(/no source/i);
+  });
+
+  it("rejects a non-IMAP id", async () => {
+    const r = await imapFetchMessageSource("83465");
+    expect(r.success).toBe(false);
+    expect(r.error).toMatch(/Not an IMAP message id/);
   });
 });

@@ -8,6 +8,54 @@
  * @module utils/mimeParse
  */
 
+/**
+ * Decode RFC 2047 encoded-words (`=?charset?B?…?=`, `=?charset?Q?…?=`) in a
+ * header value.
+ *
+ * Any non-ASCII Subject arrives encoded, and `export-message-source` derives an
+ * `.eml` filename from the Subject — DEVONthink names the imported record after
+ * the filename, so an undecoded `=?UTF-8?B?…?=` would become the record's name
+ * verbatim.
+ *
+ * Decoding is best-effort by design: an unknown charset or a malformed word is
+ * left as-is rather than throwing, because a slightly ugly filename beats
+ * failing an export outright.
+ */
+export function decodeEncodedWords(value: string): string {
+  if (!value.includes("=?")) return value;
+
+  const decodeOne = (charset: string, enc: string, text: string): string | null => {
+    try {
+      let bytes: Buffer;
+      if (/^b$/i.test(enc)) {
+        bytes = Buffer.from(text, "base64");
+      } else {
+        // Q-encoding: "_" means space, "=XX" is a hex octet (RFC 2047 §4.2).
+        const qp = text
+          .replace(/_/g, " ")
+          .replace(/=([0-9A-Fa-f]{2})/g, (_m, hex: string) =>
+            String.fromCharCode(parseInt(hex, 16))
+          );
+        bytes = Buffer.from(qp, "latin1");
+      }
+      // Strip any RFC 2231 language suffix ("utf-8*en" -> "utf-8"). An
+      // unsupported label makes TextDecoder throw, which the catch handles.
+      return new TextDecoder(charset.split("*")[0]).decode(bytes);
+    } catch {
+      return null;
+    }
+  };
+
+  // Whitespace separating two adjacent encoded-words is not part of the text
+  // and must be dropped (RFC 2047 §6.2); whitespace elsewhere is preserved.
+  const collapsed = value.replace(/\?=\s+=\?/g, "?==?");
+
+  return collapsed.replace(
+    /=\?([^?]+)\?([BbQq])\?([^?]*)\?=/g,
+    (whole, charset: string, enc: string, text: string) => decodeOne(charset, enc, text) ?? whole
+  );
+}
+
 export interface MimeAttachmentInfo {
   /** Filename from Content-Disposition or Content-Type name parameter */
   name: string;

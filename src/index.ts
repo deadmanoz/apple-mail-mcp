@@ -24,9 +24,13 @@ import { createRequire } from "module";
 import { McpServer, type RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { AppleMailManager, resolveAttachmentSaveTarget } from "@/services/appleMailManager.js";
-import { writeFileSync } from "fs";
-import { join as joinPath } from "path";
+import {
+  AppleMailManager,
+  resolveAttachmentSaveTarget,
+  isPathWithinAllowedRoots,
+} from "@/services/appleMailManager.js";
+import { writeFileSync, existsSync, statSync } from "fs";
+import { resolve as resolvePath, join as joinPath, dirname } from "path";
 import {
   sendViaSmtp,
   sendSerialViaSmtp,
@@ -72,7 +76,9 @@ import {
   imapDeleteMessageById,
   imapFetchMessageId,
   decodeImapId,
+  imapFetchMessageSource,
 } from "@/services/imapClient.js";
+import { deriveEmlFilename } from "@/utils/emlFilename.js";
 import {
   successResponse,
   errorResponse,
@@ -1899,6 +1905,113 @@ server.registerTool(
       { attachmentName, bytes: r.bytes, contentBase64: r.base64 }
     );
   }, "Error fetching attachment")
+);
+
+// --- export-message-source ---
+
+/** Append .eml unless the caller already did. */
+function ensureEmlExtension(name: string): string {
+  return /\.eml$/i.test(name) ? name : `${name}.eml`;
+}
+
+/**
+ * Why `name` is unusable inside `dir`, or null if it's fine.
+ *
+ * The separator check is what actually closes traversal; the dirname check then
+ * only has "." / ".." left to catch. Checking dirname beats banning ".."
+ * outright, which would reject every ordinary subject with an ellipsis
+ * ("Re: Foo... Bar").
+ */
+function emlTargetProblem(dir: string, name: string): string | null {
+  if (/[/\\\0]/.test(name)) return "must not contain path separators";
+  const target = joinPath(dir, name);
+  if (dirname(target) !== dir || !isPathWithinAllowedRoots(target)) {
+    return "resolves outside the save directory";
+  }
+  return null;
+}
+
+server.registerTool(
+  "export-message-source",
+  {
+    description:
+      "Use when: exporting a message's complete raw MIME source (by id) to disk as an .eml file, e.g. to archive it into DEVONthink (which imports .eml as a native email record, preserving headers, body, and attachments) or another mail client.\nReturns: the saved file path, its size in bytes, and which backend produced it.\nDo not use when: you want the readable body (use get-message) or a single attachment (use save-attachment / fetch-attachment).\nSafety: writes a file to disk — savePath must be a directory inside the configured allowed roots, and filename may not contain path separators.\nFidelity: backend='imap' is byte-exact. backend='applescript' is re-encoded to UTF-8 by Mail's scripting bridge, so a message declaring a non-UTF-8 charset with an 8-bit transfer encoding may not match its own charset header.",
+    inputSchema: {
+      id: MESSAGE_ID_SCHEMA,
+      savePath: z.string().min(1, "Save directory path is required"),
+      filename: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "Filename for the .eml (default: derived from the message's date and subject, e.g. '2026-07-15 Invoice from Acme.eml'). The .eml extension is added if omitted."
+        ),
+    },
+    outputSchema: {
+      ok: z.boolean().optional(),
+      id: z.string().optional(),
+      filePath: z.string().optional(),
+      bytes: z.number().optional(),
+      backend: z.string().optional(),
+    },
+  },
+  withErrorHandling(async ({ id, savePath, filename }) => {
+    const resolvedDir = resolvePath(savePath);
+    if (!isPathWithinAllowedRoots(resolvedDir)) {
+      return errorResponse(`Save path "${savePath}" is outside allowed directories`);
+    }
+    // Validate everything we can before fetching: `source of msg` can take 120s
+    // on a big message, and rejecting the destination only after that wastes all
+    // of it.
+    if (!existsSync(resolvedDir) || !statSync(resolvedDir).isDirectory()) {
+      return errorResponse(`Save path "${savePath}" is not an existing directory`);
+    }
+    const explicitName = filename ? ensureEmlExtension(filename) : undefined;
+    if (explicitName) {
+      const problem = emlTargetProblem(resolvedDir, explicitName);
+      if (problem) return errorResponse(`Invalid filename "${filename}": ${problem}`);
+    }
+
+    // Each backend keeps its own fidelity: IMAP hands back real bytes, so they
+    // go to disk untouched; AppleScript only ever had a decoded string.
+    let source: Buffer;
+    let backend: "imap" | "applescript";
+    let derivedName: string;
+
+    if (id.startsWith("imap:")) {
+      const r = await imapFetchMessageSource(id);
+      if (!r.success || !r.source) {
+        return errorResponse(r.error || `Failed to export message "${id}"`);
+      }
+      backend = "imap";
+      source = r.source;
+      derivedName = deriveEmlFilename({ id, subject: r.subject, date: r.date });
+    } else {
+      const r = mailManager.getRawSourceResult(id);
+      if (!r.ok || !r.source) {
+        return errorResponse(r.error || `Failed to export message "${id}"`);
+      }
+      backend = "applescript";
+      source = Buffer.from(r.source, "utf8");
+      // The source we already have carries the headers we need to name it.
+      const headers = parseOriginalHeaders(r.source);
+      derivedName = deriveEmlFilename({ id, subject: headers.subject, date: headers.date });
+    }
+
+    // An explicit name was already validated above; re-checking the derived one
+    // keeps a single gate in front of the write (and asserts the sanitiser held).
+    const name = explicitName ?? derivedName;
+    const problem = emlTargetProblem(resolvedDir, name);
+    if (problem) return errorResponse(`Invalid filename "${name}": ${problem}`);
+
+    const filePath = joinPath(resolvedDir, name);
+    writeFileSync(filePath, source);
+
+    return successResponse(
+      `Exported message ${id} to ${filePath} (${source.length} bytes, ${backend} backend).`,
+      { ok: true, id, filePath, bytes: source.length, backend }
+    );
+  }, "Error exporting message source")
 );
 
 // =============================================================================
