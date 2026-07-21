@@ -115,15 +115,22 @@ loadFileConfig();
  *  token (`imap:<base64url>`, emitted by the IMAP read path). The IMAP form is
  *  base64url so it stays injection-safe; it never reaches AppleScript (it's
  *  decoded and routed to IMAP instead). */
-const MESSAGE_ID_SCHEMA = z
+const MESSAGE_ID_PATTERN = /^(\d+|imap:[A-Za-z0-9_-]+)$/;
+const MESSAGE_ID_ERROR = "Message ID must be numeric or an IMAP id (imap:…)";
+const MESSAGE_ID_SCHEMA = z.string().regex(MESSAGE_ID_PATTERN, MESSAGE_ID_ERROR);
+
+// llama.cpp grammar conversion rejects regex patterns nested in array items.
+// Keep the same runtime validation as MESSAGE_ID_SCHEMA without advertising
+// the pattern in the JSON Schema sent to MCP clients.
+const BATCH_MESSAGE_ID_SCHEMA = z
   .string()
-  .regex(/^(\d+|imap:[A-Za-z0-9_-]+)$/, "Message ID must be numeric or an IMAP id (imap:…)");
+  .refine((id) => MESSAGE_ID_PATTERN.test(id), MESSAGE_ID_ERROR);
 
 /** Batch operations accept numeric (AppleScript) and/or imap: ids (I2) and are
  *  capped to prevent unbounded loops / DoS. Numeric ids run via AppleScript;
  *  imap: ids are grouped by mailbox and applied in a single UID command. */
 const BATCH_IDS_SCHEMA = z
-  .array(MESSAGE_ID_SCHEMA)
+  .array(BATCH_MESSAGE_ID_SCHEMA)
   .min(1, "At least one message ID is required")
   .max(100, "Cannot process more than 100 messages in a single batch");
 
@@ -149,16 +156,18 @@ const FLAG_COLOR_SCHEMA = z
 
 /** Date filter strings must look like natural-language dates (e.g. "March 1, 2026").
  *  Block characters that could escape an AppleScript `date "..."` literal. */
-const DATE_FILTER_SCHEMA = z
-  .string()
-  .regex(
-    /^[a-zA-Z0-9 ,/\-:]+$/,
-    "Date must contain only alphanumeric characters, spaces, commas, slashes, hyphens, and colons"
-  )
-  .refine((val) => !isNaN(new Date(val).getTime()), {
-    message: "Date string must be a valid date (e.g., 'January 1, 2026' or '2026-03-15')",
-  })
-  .optional();
+function createDateFilterSchema() {
+  return z
+    .string()
+    .regex(
+      /^[a-zA-Z0-9 ,/\-:]+$/,
+      "Date must contain only alphanumeric characters, spaces, commas, slashes, hyphens, and colons"
+    )
+    .refine((val) => !isNaN(new Date(val).getTime()), {
+      message: "Date string must be a valid date (e.g., 'January 1, 2026' or '2026-03-15')",
+    })
+    .optional();
+}
 
 // Attachments: absolute file paths and/or inline base64 content (B4).
 const ATTACHMENTS_SCHEMA = z
@@ -470,8 +479,8 @@ server.registerTool(
       account: z.string().optional().describe("Account to search in (omit to search all accounts)"),
       isRead: z.boolean().optional().describe("Filter by read status"),
       isFlagged: z.boolean().optional().describe("Filter by flagged status"),
-      dateFrom: DATE_FILTER_SCHEMA.describe("Start date filter (e.g., 'January 1, 2026')"),
-      dateTo: DATE_FILTER_SCHEMA.describe("End date filter (e.g., 'March 1, 2026')"),
+      dateFrom: createDateFilterSchema().describe("Start date filter (e.g., 'January 1, 2026')"),
+      dateTo: createDateFilterSchema().describe("End date filter (e.g., 'March 1, 2026')"),
       limit: z
         .number()
         .int()

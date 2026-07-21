@@ -82,6 +82,43 @@ describe("outputSchema contract (real server over stdio)", () => {
     ).toEqual([]);
   });
 
+  it("advertises provider-compatible input schemas", async () => {
+    const { tools } = await client.listTools();
+    const offenders: string[] = [];
+
+    function visit(value: unknown, toolName: string, path = "inputSchema"): void {
+      if (value === null || typeof value !== "object") return;
+
+      for (const [key, child] of Object.entries(value)) {
+        const childPath = `${path}.${key}`;
+        if (key === "$ref" && (typeof child !== "string" || !child.startsWith("#/$defs/"))) {
+          offenders.push(`${toolName}: ${childPath}=${String(child)}`);
+        }
+        if (key === "pattern" && path.endsWith(".items")) {
+          offenders.push(`${toolName}: ${childPath}=${String(child)}`);
+        }
+        visit(child, toolName, childPath);
+      }
+    }
+
+    for (const tool of tools) visit(tool.inputSchema, tool.name);
+
+    expect(
+      offenders,
+      `input schemas contain constructs rejected by OpenCode providers: ${offenders.join("; ")}`
+    ).toEqual([]);
+  });
+
+  it("keeps runtime validation for batch message IDs", async () => {
+    const result = await client.callTool({
+      name: "batch-mark-as-read",
+      arguments: { ids: ["not-a-message-id"] },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toMatch(/Message ID must be numeric or an IMAP id/);
+  });
+
   it("diagnostic tools' real output validates against their outputSchema (when reachable)", async () => {
     // The SDK throws an "Output validation error" McpError when a success
     // result's structuredContent is missing or fails its schema — the only

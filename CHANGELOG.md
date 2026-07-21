@@ -8,10 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Add `export-message-source`, which writes a message's complete raw MIME source to disk as an `.eml` file. DEVONthink (and Thunderbird, and most mail clients) imports `.eml` as a native email record with headers, body, and attachments intact, so this replaces drag-and-drop out of Mail.app for archiving. Included in the `organize` profile — it only reads.
+
+  The two backends do not have equal fidelity, and the tool reports which one produced the file via `backend` in its structured result. `imap` ids fetch `BODY[]` and the bytes go to disk untouched. Numeric ids go through Mail's scripting bridge, where `source of msg` is a *text* round-trip (Mail decodes to an AppleScript string, osascript re-encodes as UTF-8): line endings come back normalised from CRLF to LF on every export, and a message declaring a non-UTF-8 charset with an 8-bit transfer encoding can end up not matching its own charset header (DEVONthink honours the declared charset, so that mismatch surfaces as mojibake). An `applescript` export is a normalised rendering, not the original bytes — fine for archiving into DEVONthink (verified end to end), not fine for DKIM verification or checksumming against the server copy.
+
+  Filenames default to `YYYY-MM-DD Subject.eml` rather than `{id}.eml`, because DEVONthink names an imported record after the *filename*, not the Subject header — `{id}.eml` produces a record literally named "83465". RFC 2047 encoded-words in the subject are decoded first (`=?UTF-8?B?…?=` would otherwise become the record's name verbatim), and the result is sanitised and capped to the macOS 255-byte filename limit.
 - Add an MCP tool exposure policy controlled by `APPLE_MAIL_MCP_TOOL_PROFILE`, `APPLE_MAIL_MCP_ALLOWED_TOOLS`, and `APPLE_MAIL_MCP_DISABLED_TOOLS`. The new `organize` profile exposes read/search, mailbox/account listing, message movement, read/flag status, attachment list/save/fetch, stats, sync status, `health-check`, and `doctor`, while hiding send, compose, reply, forward, delete, mailbox mutation, rule, contact, template tools, template resources, and the `compose-reply` prompt. The `triage-inbox` prompt omits hidden action types.
 
 ### Changed
 - Configure the project-scope `.mcp.json` for this fork to launch with `APPLE_MAIL_MCP_TOOL_PROFILE=organize`, giving local clone users a no-send default.
+
+### Fixed
+- Emit provider-compatible input schemas for `search-messages` date bounds and batch message IDs, preventing unsupported cross-property references and array-item regex grammars from failing OpenCode requests before generation.
 
 ## [2.8.13] - 2026-07-21
 ### Changed

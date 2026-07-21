@@ -81013,8 +81013,11 @@ function toolPolicySummary(policy) {
 
 // src/index.ts
 loadFileConfig();
-var MESSAGE_ID_SCHEMA = external_exports.string().regex(/^(\d+|imap:[A-Za-z0-9_-]+)$/, "Message ID must be numeric or an IMAP id (imap:\u2026)");
-var BATCH_IDS_SCHEMA = external_exports.array(MESSAGE_ID_SCHEMA).min(1, "At least one message ID is required").max(100, "Cannot process more than 100 messages in a single batch");
+var MESSAGE_ID_PATTERN = /^(\d+|imap:[A-Za-z0-9_-]+)$/;
+var MESSAGE_ID_ERROR = "Message ID must be numeric or an IMAP id (imap:\u2026)";
+var MESSAGE_ID_SCHEMA = external_exports.string().regex(MESSAGE_ID_PATTERN, MESSAGE_ID_ERROR);
+var BATCH_MESSAGE_ID_SCHEMA = external_exports.string().refine((id) => MESSAGE_ID_PATTERN.test(id), MESSAGE_ID_ERROR);
+var BATCH_IDS_SCHEMA = external_exports.array(BATCH_MESSAGE_ID_SCHEMA).min(1, "At least one message ID is required").max(100, "Cannot process more than 100 messages in a single batch");
 var FLAG_COLOR_INDEX = {
   red: 0,
   orange: 1,
@@ -81028,12 +81031,14 @@ var FLAG_COLOR_INDEX = {
 var FLAG_COLOR_SCHEMA = external_exports.enum(["red", "orange", "yellow", "green", "blue", "purple", "gray", "grey"]).optional().describe(
   "Optional flag color (Apple Mail palette: red, orange, yellow, green, blue, purple, gray \u2014 'grey' accepted). Omit for Mail's default flag. Colors are applied via Mail.app (AppleScript); for an IMAP-routed message id the flag is set but the color is not applied (IMAP flags are colorless)."
 );
-var DATE_FILTER_SCHEMA = external_exports.string().regex(
-  /^[a-zA-Z0-9 ,/\-:]+$/,
-  "Date must contain only alphanumeric characters, spaces, commas, slashes, hyphens, and colons"
-).refine((val) => !isNaN(new Date(val).getTime()), {
-  message: "Date string must be a valid date (e.g., 'January 1, 2026' or '2026-03-15')"
-}).optional();
+function createDateFilterSchema() {
+  return external_exports.string().regex(
+    /^[a-zA-Z0-9 ,/\-:]+$/,
+    "Date must contain only alphanumeric characters, spaces, commas, slashes, hyphens, and colons"
+  ).refine((val) => !isNaN(new Date(val).getTime()), {
+    message: "Date string must be a valid date (e.g., 'January 1, 2026' or '2026-03-15')"
+  }).optional();
+}
 var ATTACHMENTS_SCHEMA = external_exports.array(
   external_exports.union([
     external_exports.string().describe("Absolute path to an existing file"),
@@ -81212,8 +81217,8 @@ server.registerTool(
       account: external_exports.string().optional().describe("Account to search in (omit to search all accounts)"),
       isRead: external_exports.boolean().optional().describe("Filter by read status"),
       isFlagged: external_exports.boolean().optional().describe("Filter by flagged status"),
-      dateFrom: DATE_FILTER_SCHEMA.describe("Start date filter (e.g., 'January 1, 2026')"),
-      dateTo: DATE_FILTER_SCHEMA.describe("End date filter (e.g., 'March 1, 2026')"),
+      dateFrom: createDateFilterSchema().describe("Start date filter (e.g., 'January 1, 2026')"),
+      dateTo: createDateFilterSchema().describe("End date filter (e.g., 'March 1, 2026')"),
       limit: external_exports.number().int().min(1).max(500).optional().describe("Maximum number of results (default: 50, max: 500)")
     },
     outputSchema: LIST_OUTPUT_SCHEMA
